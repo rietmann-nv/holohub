@@ -33,6 +33,7 @@ except ImportError:
 
 from holoscan.conditions import CountCondition
 from holoscan.core import Application, Operator, OperatorSpec
+from holoscan.decorator import Input, Output, create_op
 
 # Radar Settings
 num_channels = 16
@@ -75,6 +76,17 @@ mask = cp.transpose(
     )
 )
 
+# unsure how to use the "count" condition on this operator
+@create_op(
+    outputs=("x","waveform"))
+def signal_generator():
+    x = cp.random.randn(
+        num_pulses, num_uncompressed_range_bins, dtype=cp.float32
+    ) + 1j * cp.random.randn(num_pulses, num_uncompressed_range_bins, dtype=cp.float32)
+    waveform = cp.random.randn(waveform_length, dtype=cp.float32) + 1j * cp.random.randn(
+        waveform_length, dtype=cp.float32
+    )
+    return (x, waveform)
 
 class SignalGeneratorOp(Operator):
     def __init__(self, *args, **kwargs):
@@ -96,6 +108,25 @@ class SignalGeneratorOp(Operator):
         op_output.emit(x, "x")
         op_output.emit(waveform, "waveform")
 
+@create_op(
+    inputs=("x", "waveform"),
+    outputs=("X")
+)
+def pulse_compression(x, waveform):
+    waveform_windowed = waveform * window
+    waveform_windowed_norm = waveform_windowed / cp.linalg.norm(waveform_windowed)
+
+    W = cp.conj(cp.fft.fft(waveform_windowed_norm, Nfft))
+    X = cp.fft.fft(x, Nfft, 1)
+
+    for pulse in range(num_pulses):
+        y = cp.fft.ifft(cp.multiply(X[pulse, :], W), Nfft, 0)
+        x[pulse, 0:num_compressed_range_bins] = y[0:num_compressed_range_bins]
+
+    x_compressed = x[:, 0:num_compressed_range_bins]
+
+    x_compressed_stack = cp.stack([x_compressed] * num_channels)
+    return x_compressed_stack
 
 class PulseCompressionOp(Operator):
     def __init__(self, *args, **kwargs):
@@ -128,72 +159,43 @@ class PulseCompressionOp(Operator):
 
         op_output.emit(x_compressed_stack, "X")
 
+@create_op(
+    inputs=("x"),
+    outputs=("X"))
+def mti_filter(x):
+    for channel in range(num_channels):
+        x_conv2 = cusignal.convolve2d(x[channel, :, :], cp.array([[1], [-2], [-1]]), "valid")
+        x_conv2_stack = cp.stack([x_conv2] * num_channels)
 
-class MTIFilterOp(Operator):
-    def __init__(self, *args, **kwargs):
-        # Need to call the base class constructor last
-        self.index = 0
-        super().__init__(*args, **kwargs)
+    return x_conv2_stack
 
-    def setup(self, spec: OperatorSpec):
-        spec.input("x")
-        spec.output("X")
+@create_op(
+    inputs=("x"),
+    outputs=("X"))
+def range_doppler(x):
+    for channel in range(num_channels):
+        x_window = cp.fft.fft(cp.multiply(x[channel, :, :], range_doppler_window), NDfft, 0)
+        x_window_stack = cp.stack([x_window] * num_channels)
 
-    def compute(self, op_input, op_output, context):
-        x = op_input.receive("x")
-        for channel in range(num_channels):
-            x_conv2 = cusignal.convolve2d(x[channel, :, :], cp.array([[1], [-2], [-1]]), "valid")
-            x_conv2_stack = cp.stack([x_conv2] * num_channels)
+    return x_window_stack
 
-        op_output.emit(x_conv2_stack, "X")
+@create_op(
+    inputs=("x"),
+    outputs=("X"))
+def cfar_fn(x):
+    norm = cusignal.convolve2d(cp.ones(x.shape[1::]), mask, "same")
 
+    for channel in range(num_channels):
+        background_averages = cp.divide(
+            cusignal.convolve2d(cp.abs(x[channel, :, :]) ** 2, mask, "same"), norm
+        )
+        alpha = cp.multiply(norm, cp.power(Pfa, cp.divide(-1.0, norm)) - 1)
+        dets = cp.zeros(x[channel, :, :].shape)
+        dets[cp.where(cp.abs(x[channel, :, :]) ** 2 > cp.multiply(alpha, background_averages))]
 
-class RangeDopplerOp(Operator):
-    def __init__(self, *args, **kwargs):
-        # Need to call the base class constructor last
-        self.index = 0
-        super().__init__(*args, **kwargs)
+        dets_stacked = cp.stack([dets] * num_channels)
 
-    def setup(self, spec: OperatorSpec):
-        spec.input("x")
-        spec.output("X")
-
-    def compute(self, op_input, op_output, context):
-        x = op_input.receive("x")
-        for channel in range(num_channels):
-            x_window = cp.fft.fft(cp.multiply(x[channel, :, :], range_doppler_window), NDfft, 0)
-            x_window_stack = cp.stack([x_window] * num_channels)
-
-        op_output.emit(x_window_stack, "X")
-
-
-class CFAROp(Operator):
-    def __init__(self, *args, **kwargs):
-        # Need to call the base class constructor last
-        self.index = 0
-        super().__init__(*args, **kwargs)
-
-    def setup(self, spec: OperatorSpec):
-        spec.input("x")
-        spec.output("X")
-
-    def compute(self, op_input, op_output, context):
-        x = op_input.receive("x")
-
-        norm = cusignal.convolve2d(cp.ones(x.shape[1::]), mask, "same")
-
-        for channel in range(num_channels):
-            background_averages = cp.divide(
-                cusignal.convolve2d(cp.abs(x[channel, :, :]) ** 2, mask, "same"), norm
-            )
-            alpha = cp.multiply(norm, cp.power(Pfa, cp.divide(-1.0, norm)) - 1)
-            dets = cp.zeros(x[channel, :, :].shape)
-            dets[cp.where(cp.abs(x[channel, :, :]) ** 2 > cp.multiply(alpha, background_averages))]
-
-            dets_stacked = cp.stack([dets] * num_channels)
-
-        op_output.emit(dets_stacked, "X")
-
+    return dets_stacked
 
 class SinkOp(Operator):
     def __init__(self, *args, shape=(512, 512), **kwargs):
@@ -213,10 +215,11 @@ class BasicRadarFlow(Application):
 
     def compose(self):
         src = SignalGeneratorOp(self, CountCondition(self, iterations), name="src")
-        pulseCompression = PulseCompressionOp(self, name="pulse-compression")
-        mtiFilter = MTIFilterOp(self, name="mti-filter")
-        rangeDoppler = RangeDopplerOp(self, name="range-doppler")
-        cfar = CFAROp(self, name="cfar")
+        pulseCompression = pulse_compression(self, name="pulse-compression")
+        mtiFilter = mti_filter(self, name="mti-filter")
+        rangeDoppler = range_doppler(self, name="range-doppler")
+        cfar = cfar_fn(self, name="cfar")
+
         sink = SinkOp(self, name="sink")
 
         self.add_flow(src, pulseCompression, {("x", "x"), ("waveform", "waveform")})
