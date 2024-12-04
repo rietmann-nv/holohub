@@ -35,6 +35,23 @@ from holoscan.conditions import CountCondition
 from holoscan.core import Application, Operator, OperatorSpec
 from holoscan.decorator import Input, Output, create_op
 
+import matplotlib.pyplot as plt
+
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
+import socketio
+sio = socketio.Client()
+
+@sio.event
+def connect():
+    print("Connected to server")
+
+@sio.event
+def disconnect():
+    print("Disconnected from server")
+
+
 # Radar Settings
 num_channels = 16
 num_pulses = 128
@@ -44,6 +61,7 @@ num_compressed_range_bins = num_uncompressed_range_bins - waveform_length + 1
 NDfft = 256
 Pfa = 1e-5
 iterations = 100
+
 
 # Window Settings
 window = cusignal.hamming(waveform_length)
@@ -77,8 +95,8 @@ mask = cp.transpose(
 )
 
 # unsure how to use the "count" condition on this operator
-@create_op(
-    outputs=("x","waveform"))
+# @create_op(
+    # outputs=("x","waveform"))
 def signal_generator():
     x = cp.random.randn(
         num_pulses, num_uncompressed_range_bins, dtype=cp.float32
@@ -87,6 +105,25 @@ def signal_generator():
         waveform_length, dtype=cp.float32
     )
     return (x, waveform)
+
+class VizOp(Operator):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def setup(self, spec: OperatorSpec):
+        spec.input("x")
+        spec.input("waveform")
+
+        sio.connect('http://localhost:8050')
+
+        (_, y) = signal_generator()
+        sio.emit("update_data", np.real(y.get()).tolist())
+
+    def compute(self, op_input, op_output, context):
+        x = op_input.receive("x")
+        y = op_input.receive("waveform")
+        sio.emit("update_data", np.real(y.get()).tolist())
+        print("viz data y=", y[:3], "...")
 
 class SignalGeneratorOp(Operator):
     def __init__(self, *args, **kwargs):
@@ -222,12 +259,15 @@ class BasicRadarFlow(Application):
 
         sink = SinkOp(self, name="sink")
 
+        viz = VizOp(self, name="viz")
+
         self.add_flow(src, pulseCompression, {("x", "x"), ("waveform", "waveform")})
         self.add_flow(pulseCompression, mtiFilter)
         self.add_flow(mtiFilter, rangeDoppler)
         self.add_flow(rangeDoppler, cfar)
         self.add_flow(cfar, sink)
 
+        self.add_flow(src, viz, {("x", "x"), ("waveform", "waveform")})
 
 if __name__ == "__main__":
     app = BasicRadarFlow()
