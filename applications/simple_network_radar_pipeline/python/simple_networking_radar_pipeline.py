@@ -136,37 +136,6 @@ def pulse_compression(x, waveform):
     x_compressed_stack = cp.stack([x_compressed] * num_channels)
     return x_compressed_stack
 
-class PulseCompressionOp(Operator):
-    def __init__(self, *args, **kwargs):
-        # Need to call the base class constructor last
-        self.index = 0
-        super().__init__(*args, **kwargs)
-
-    def setup(self, spec: OperatorSpec):
-        spec.input("x")
-        spec.input("waveform")
-        spec.output("X")
-
-    def compute(self, op_input, op_output, context):
-        x = op_input.receive("x")
-        waveform = op_input.receive("waveform")
-
-        waveform_windowed = waveform * window
-        waveform_windowed_norm = waveform_windowed / cp.linalg.norm(waveform_windowed)
-
-        W = cp.conj(cp.fft.fft(waveform_windowed_norm, Nfft))
-        X = cp.fft.fft(x, Nfft, 1)
-
-        for pulse in range(num_pulses):
-            y = cp.fft.ifft(cp.multiply(X[pulse, :], W), Nfft, 0)
-            x[pulse, 0:num_compressed_range_bins] = y[0:num_compressed_range_bins]
-
-        x_compressed = x[:, 0:num_compressed_range_bins]
-
-        x_compressed_stack = cp.stack([x_compressed] * num_channels)
-
-        op_output.emit(x_compressed_stack, "X")
-
 @create_op(
     inputs=("x"),
     outputs=("X"))
