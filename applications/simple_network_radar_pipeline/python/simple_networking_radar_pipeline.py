@@ -37,19 +37,23 @@ from holoscan.decorator import Input, Output, create_op
 
 import matplotlib.pyplot as plt
 
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+import multiprocessing as mp
 
-import socketio
-sio = socketio.Client()
+queue = mp.Queue()
 
-@sio.event
-def connect():
-    print("Connected to server")
+def visualize(queue):
+    plt.ion()
+    fig, ax = plt.subplots()
+    line, = ax.plot([], [])
+    ax.set_xlim(0, 1000)
+    ax.set_ylim(-3, 3)
 
-@sio.event
-def disconnect():
-    print("Disconnected from server")
+    while True:
+        if not queue.empty():
+            data = queue.get()
+            line.set_data(range(len(data)), data)
+            fig.canvas.draw()
+            fig.canvas.flush_events()
 
 
 # Radar Settings
@@ -95,55 +99,42 @@ mask = cp.transpose(
 )
 
 # unsure how to use the "count" condition on this operator
-# @create_op(
-    # outputs=("x","waveform"))
-def signal_generator():
-    x = cp.random.randn(
-        num_pulses, num_uncompressed_range_bins, dtype=cp.float32
-    ) + 1j * cp.random.randn(num_pulses, num_uncompressed_range_bins, dtype=cp.float32)
-    waveform = cp.random.randn(waveform_length, dtype=cp.float32) + 1j * cp.random.randn(
-        waveform_length, dtype=cp.float32
-    )
-    return (x, waveform)
-
-class VizOp(Operator):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-    def setup(self, spec: OperatorSpec):
-        spec.input("x")
-        spec.input("waveform")
-
-        sio.connect('http://localhost:8050')
-
-        (_, y) = signal_generator()
-        sio.emit("update_data", np.real(y.get()).tolist())
-
-    def compute(self, op_input, op_output, context):
-        x = op_input.receive("x")
-        y = op_input.receive("waveform")
-        sio.emit("update_data", np.real(y.get()).tolist())
-        print("viz data y=", y[:3], "...")
-
-class SignalGeneratorOp(Operator):
-    def __init__(self, *args, **kwargs):
-        # Need to call the base class constructor last
-        super().__init__(*args, **kwargs)
-
-    def setup(self, spec: OperatorSpec):
-        spec.output("x")
-        spec.output("waveform")
-
-    def compute(self, op_input, op_output, context):
+@create_op(
+    outputs=("x","waveform"))
+def signal_generator(count=1000):
+    for _ in range(count):
         x = cp.random.randn(
             num_pulses, num_uncompressed_range_bins, dtype=cp.float32
         ) + 1j * cp.random.randn(num_pulses, num_uncompressed_range_bins, dtype=cp.float32)
         waveform = cp.random.randn(waveform_length, dtype=cp.float32) + 1j * cp.random.randn(
             waveform_length, dtype=cp.float32
         )
+        yield (x, waveform)
 
-        op_output.emit(x, "x")
-        op_output.emit(waveform, "waveform")
+@create_op(inputs=("x","waveform"))
+def viz_waveform(x, waveform):
+    queue.put(np.real(waveform.get()))
+    # print(f"viz data y({waveform.shape})=", waveform[:3], "...")
+
+# class SignalGeneratorOp(Operator):
+#     def __init__(self, *args, **kwargs):
+#         # Need to call the base class constructor last
+#         super().__init__(*args, **kwargs)
+
+#     def setup(self, spec: OperatorSpec):
+#         spec.output("x")
+#         spec.output("waveform")
+
+#     def compute(self, op_input, op_output, context):
+#         x = cp.random.randn(
+#             num_pulses, num_uncompressed_range_bins, dtype=cp.float32
+#         ) + 1j * cp.random.randn(num_pulses, num_uncompressed_range_bins, dtype=cp.float32)
+#         waveform = cp.random.randn(waveform_length, dtype=cp.float32) + 1j * cp.random.randn(
+#             waveform_length, dtype=cp.float32
+#         )
+
+#         op_output.emit(x, "x")
+#         op_output.emit(waveform, "waveform")
 
 @create_op(
     inputs=("x", "waveform"),
@@ -251,7 +242,8 @@ class BasicRadarFlow(Application):
         super().__init__()
 
     def compose(self):
-        src = SignalGeneratorOp(self, CountCondition(self, iterations), name="src")
+        # src = SignalGeneratorOp(self, CountCondition(self, iterations), name="src")
+        src = signal_generator(self, count=iterations, name="src")
         pulseCompression = pulse_compression(self, name="pulse-compression")
         mtiFilter = mti_filter(self, name="mti-filter")
         rangeDoppler = range_doppler(self, name="range-doppler")
@@ -259,7 +251,7 @@ class BasicRadarFlow(Application):
 
         sink = SinkOp(self, name="sink")
 
-        viz = VizOp(self, name="viz")
+        viz = viz_waveform(self, name="viz")
 
         self.add_flow(src, pulseCompression, {("x", "x"), ("waveform", "waveform")})
         self.add_flow(pulseCompression, mtiFilter)
@@ -273,6 +265,9 @@ if __name__ == "__main__":
     app = BasicRadarFlow()
     app.config("")
 
+    viz_process = mp.Process(target=visualize, args=(queue,))
+    viz_process.start()
+
     tstart = time.time()
     app.run()
     tstop = time.time()
@@ -280,3 +275,5 @@ if __name__ == "__main__":
     duration = (iterations * num_pulses * num_channels) / (tstop - tstart)
 
     print(f"{duration:0.3f} pulses/sec")
+
+    viz_process.kill()
