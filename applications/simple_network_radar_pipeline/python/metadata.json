@@ -1,0 +1,43 @@
+{
+	"application": {
+		"name": "Simple Classical Radar Pipeline",
+		"authors": [
+			{
+				"name": "Cliff Burdick",
+				"affiliation": "NVIDIA"
+			}
+		],
+		"language": "Python",
+		"version": "1.0",
+		"changelog": {
+			"1.0": "Initial Release"
+		},
+		"holoscan_sdk": {
+			"minimum_required_version": "0.4.0",
+			"tested_versions": [
+				"0.4.0"
+			]
+		},
+		"platforms": ["amd64"],
+		"tags": ["Aerospace, Defense, Communications"],
+		"ranking": 2,
+		"dependencies": {
+			"libraries": [{
+				"name": "numpy",
+				"version": "1.23.2"
+			},
+            {
+				"name": "cupy",
+				"version": "11.4"
+			},
+            {
+				"name": "cusignal",
+				"version": "22.12"
+			}]
+		},
+		"run": {
+			"command": "python3 simple_radar_pipeline.py",
+			"workdir": "holohub_app_source"
+		}
+	}
+}
