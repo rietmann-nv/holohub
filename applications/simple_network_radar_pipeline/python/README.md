@@ -21,14 +21,10 @@ Prior to running the application, the user needs to install the necessary depend
 
 ```
 conda env create -f environment.yml
-
-conda create --name holoscan-sdr-demo python=3.8
-conda activate holoscan-sdr-demo
-conda install -c conda-forge -c rapidsai -c nvidia cusignal
-pip install holoscan
+conda activate holoscan
 ```
 
 The simple radar signal processing pipeline example can then be run via
 ```
-python applications/simple_radar_pipeline/simple_radar_pipeline.py
+python simple_networking_radar_pipeline.py
 ```

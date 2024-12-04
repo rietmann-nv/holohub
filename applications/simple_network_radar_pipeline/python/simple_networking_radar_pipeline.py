@@ -116,26 +116,6 @@ def viz_waveform(x, waveform):
     queue.put(np.real(waveform.get()))
     # print(f"viz data y({waveform.shape})=", waveform[:3], "...")
 
-# class SignalGeneratorOp(Operator):
-#     def __init__(self, *args, **kwargs):
-#         # Need to call the base class constructor last
-#         super().__init__(*args, **kwargs)
-
-#     def setup(self, spec: OperatorSpec):
-#         spec.output("x")
-#         spec.output("waveform")
-
-#     def compute(self, op_input, op_output, context):
-#         x = cp.random.randn(
-#             num_pulses, num_uncompressed_range_bins, dtype=cp.float32
-#         ) + 1j * cp.random.randn(num_pulses, num_uncompressed_range_bins, dtype=cp.float32)
-#         waveform = cp.random.randn(waveform_length, dtype=cp.float32) + 1j * cp.random.randn(
-#             waveform_length, dtype=cp.float32
-#         )
-
-#         op_output.emit(x, "x")
-#         op_output.emit(waveform, "waveform")
-
 @create_op(
     inputs=("x", "waveform"),
     outputs=("X")
@@ -242,7 +222,6 @@ class BasicRadarFlow(Application):
         super().__init__()
 
     def compose(self):
-        # src = SignalGeneratorOp(self, CountCondition(self, iterations), name="src")
         src = signal_generator(self, count=iterations, name="src")
         pulseCompression = pulse_compression(self, name="pulse-compression")
         mtiFilter = mti_filter(self, name="mti-filter")
